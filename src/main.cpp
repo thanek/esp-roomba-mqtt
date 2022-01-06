@@ -304,13 +304,34 @@ void debugCallback()
 
 void sleepIfNecessary()
 {
+  bool shouldSleep = false;
+  float mV;
+
 #ifdef ENABLE_ADC_SLEEP
   // Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
-  float mV = readADC(10);
+  mV = readADC(10);
   // According to this post, you want to stop using NiMH batteries at about 0.9V per cell
   // https://electronics.stackexchange.com/a/35879 For a 12 cell battery like is in the Roomba,
   // That's 10.8 volts.
   if (mV < 10800)
+  {
+    shouldSleep = true;
+  }
+#endif
+
+// alternative check based on roomba's sensor measures
+#ifdef ENABLE_SLEEP_ON_LOW_VOLTAGE
+  // Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
+  mV = roombaState.voltage;
+  // check if mV is > 0 because it's initial value is 0 and we don't wan't to panic
+  // before any real measure is done
+  if (mV > 0 && mV < 10800)
+  {
+    shouldSleep = true;
+  }
+#endif
+  
+  if (shouldSleep)
   {
     // Fire off a quick message with our most recent state, if MQTT is connected
     DLOG("Battery voltage is low (%.1fV). Sleeping for 10 minutes\n", mV / 1000);
@@ -332,7 +353,6 @@ void sleepIfNecessary()
     // Sleep for 10 minutes
     ESP.deepSleep(600e6);
   }
-#endif
 }
 
 bool parseRoombaStateFromStreamPacket(uint8_t *packet, int length, RoombaState *state)
@@ -414,7 +434,8 @@ void readSensorPacket()
     if (parsed)
     {
       roombaState = rs;
-      VLOG("Got Packet of len=%d! Distance:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n", packetLength, roombaState.distance, roombaState.chargingState, roombaState.voltage, roombaState.current, roombaState.charge, roombaState.capacity);
+      VLOG("Got Packet of len=%d! Distance:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n",
+           packetLength, roombaState.distance, roombaState.chargingState, roombaState.voltage, roombaState.current, roombaState.charge, roombaState.capacity);
       roombaState.cleaning = false;
       roombaState.docked = false;
       if (roombaState.current < -400)
@@ -446,9 +467,6 @@ void setup()
   // High-impedence on the BRC_PIN
   pinMode(BRC_PIN, INPUT);
 
-  // Sleep immediately if ENABLE_ADC_SLEEP and the battery is low
-  sleepIfNecessary();
-
   // Set Hostname.
   String hostname(HOSTNAME);
   WiFi.hostname(hostname);
@@ -469,10 +487,14 @@ void setup()
 
 #if LOGGING
   Debug.begin((const char *)hostname.c_str());
+  Debug.showTime(true);
   Debug.setResetCmdEnabled(true);
   Debug.setCallBackProjectCmds(debugCallback);
   Debug.setSerialEnabled(false);
 #endif
+
+  // Sleep immediately if ENABLE_ADC_SLEEP (or ENABLE_SLEEP_ON_LOW_VOLTAGE) and the battery is low
+  sleepIfNecessary();
 
   roomba.start();
   delay(100);
