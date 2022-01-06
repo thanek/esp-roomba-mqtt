@@ -69,6 +69,8 @@
 #include <Arduino.h>
 #endif
 
+#include <SoftwareSerial.h>
+
 /// Masks for LEDs in leds()
 #define ROOMBA_MASK_LED_NONE    0
 #define ROOMBA_MASK_LED_PLAY    0x2
@@ -386,7 +388,7 @@ public:
     /// \param[in] serial POinter to the HardwareSerial port to use to communicate with the Roomba. 
     /// Defaults to &Serial
     /// \param[in] baud the baud rate to use on the serial port. Defaults to 57600, the default for the Roomba.
-    Roomba(HardwareSerial* serial = &Serial, Baud baud = Baud57600);
+    Roomba(SoftwareSerial* serial, Baud baud = Baud57600);
 
     /// Resets the Roomba. 
     /// It will emit its startup message
@@ -606,6 +608,7 @@ public:
     /// getScript(NULL, 0), you can determine how many bytes would be required to store the script.
     uint8_t getScript(uint8_t* dest, uint8_t len);
   
+    static const char* chargingStateToString(int state);
 private:
     /// \enum PollState
     /// Values for _pollState
@@ -621,7 +624,7 @@ private:
     uint32_t        _baud;
 	
     /// The serial port to use to talk to the Roomba
-    HardwareSerial* _serial;
+    SoftwareSerial* _serial;
     
     /// Variables for keeping track of polling of data streams
     uint8_t         _pollState; /// Current state of polling, one of Roomba::PollState

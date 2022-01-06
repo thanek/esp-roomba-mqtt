@@ -5,7 +5,7 @@
 
 #include "Roomba.h"
 
-Roomba::Roomba(HardwareSerial* serial, Baud baud)
+Roomba::Roomba(SoftwareSerial *serial, Baud baud)
 {
   _serial = serial;
   _baud = baudCodeToBaudRate(baud);
@@ -15,57 +15,57 @@ Roomba::Roomba(HardwareSerial* serial, Baud baud)
 // Resets the
 void Roomba::reset()
 {
-    _serial->write(7);
+  _serial->write(7);
 }
 
 // Start OI
 // Changes mode to passive
 void Roomba::start()
 {
-    _serial->begin(_baud);
-    _serial->write(128);
+  _serial->begin(_baud);
+  _serial->write(128);
 }
 
 uint32_t Roomba::baudCodeToBaudRate(Baud baud)
 {
-    switch (baud)
-    {
-	case Baud300:
-	    return 300;
-	case Baud600:
-	    return 600;
-	case Baud1200:
-	    return 1200;
-	case Baud2400:
-	    return 2400;
-	case Baud4800:
-	    return 4800;
-	case Baud9600:
-	    return 9600;
-	case Baud14400:
-	    return 14400;
-	case Baud19200:
-	    return 19200;
-	case Baud28800:
-	    return 28800;
-	case Baud38400:
-	    return 38400;
-	case Baud57600:
-	    return 57600;
-	case Baud115200:
-	    return 115200;
-	default:
-	    return 57600;
-    }
+  switch (baud)
+  {
+  case Baud300:
+    return 300;
+  case Baud600:
+    return 600;
+  case Baud1200:
+    return 1200;
+  case Baud2400:
+    return 2400;
+  case Baud4800:
+    return 4800;
+  case Baud9600:
+    return 9600;
+  case Baud14400:
+    return 14400;
+  case Baud19200:
+    return 19200;
+  case Baud28800:
+    return 28800;
+  case Baud38400:
+    return 38400;
+  case Baud57600:
+    return 57600;
+  case Baud115200:
+    return 115200;
+  default:
+    return 57600;
+  }
 }
 
 void Roomba::baud(Baud baud)
 {
-    _serial->write(129);
-    _serial->write(baud);
+  _serial->write(129);
+  _serial->write(baud);
 
-    _baud = baudCodeToBaudRate(baud);
-    _serial->begin(_baud);
+  _baud = baudCodeToBaudRate(baud);
+  _serial->begin(_baud);
 }
 
 void Roomba::safeMode()
@@ -167,12 +167,12 @@ void Roomba::sendIR(uint8_t data)
 
 // Define a song
 // Data is 2 bytes per note
-void Roomba::song(uint8_t songNumber, const uint8_t* data, int len)
+void Roomba::song(uint8_t songNumber, const uint8_t *data, int len)
 {
-    _serial->write(140);
-    _serial->write(songNumber);
-    _serial->write(len >> 1); // 2 bytes per note
-    _serial->write(data, len);
+  _serial->write(140);
+  _serial->write(songNumber);
+  _serial->write(len >> 1); // 2 bytes per note
+  _serial->write(data, len);
 }
 
 void Roomba::playSong(uint8_t songNumber)
@@ -182,7 +182,7 @@ void Roomba::playSong(uint8_t songNumber)
 }
 
 // Start a stream of sensor data with the specified packet IDs in it
-void Roomba::stream(const uint8_t* packetIDs, int len)
+void Roomba::stream(const uint8_t *packetIDs, int len)
 {
   _serial->write(148);
   _serial->write((uint8_t)len);
@@ -197,7 +197,7 @@ void Roomba::streamCommand(StreamCommand command)
 }
 
 // Use len=0 to clear the script
-void Roomba::script(const uint8_t* script, uint8_t len)
+void Roomba::script(const uint8_t *script, uint8_t len)
 {
   _serial->write(152);
   _serial->write(len);
@@ -242,7 +242,7 @@ void Roomba::waitEvent(EventType type)
 // If there is a timeout, returns false
 // Blocks until all bytes are read
 // Caller must ensure there is sufficient space in dest
-bool Roomba::getData(uint8_t* dest, uint8_t len)
+bool Roomba::getData(uint8_t *dest, uint8_t len)
 {
   while (len-- > 0)
   {
@@ -258,14 +258,14 @@ bool Roomba::getData(uint8_t* dest, uint8_t len)
   return true;
 }
 
-bool Roomba::getSensors(uint8_t packetID, uint8_t* dest, uint8_t len)
+bool Roomba::getSensors(uint8_t packetID, uint8_t *dest, uint8_t len)
 {
   _serial->write(142);
   _serial->write(packetID);
   return getData(dest, len);
 }
 
-bool Roomba::getSensorsList(uint8_t* packetIDs, uint8_t numPacketIDs, uint8_t* dest, uint8_t len)
+bool Roomba::getSensorsList(uint8_t *packetIDs, uint8_t numPacketIDs, uint8_t *dest, uint8_t len)
 {
   _serial->write(149);
   _serial->write(numPacketIDs);
@@ -274,47 +274,47 @@ bool Roomba::getSensorsList(uint8_t* packetIDs, uint8_t numPacketIDs, uint8_t* d
 }
 
 // Simple state machine to read sensor data and discard everything else
-bool Roomba::pollSensors(uint8_t* dest, uint8_t destSize, uint8_t *packetLen)
+bool Roomba::pollSensors(uint8_t *dest, uint8_t destSize, uint8_t *packetLen)
 {
-    while (_serial->available())
+  while (_serial->available())
+  {
+    uint8_t ch = _serial->read();
+    switch (_pollState)
     {
-	uint8_t ch = _serial->read();
-	switch (_pollState)
-	{
-	    case PollStateIdle:
-		if (ch == 19)
-		    _pollState = PollStateWaitCount;
-		break;
+    case PollStateIdle:
+      if (ch == 19)
+        _pollState = PollStateWaitCount;
+      break;
 
-	    case PollStateWaitCount:
-		_pollChecksum = _pollSize = ch;
-		_pollCount = 0;
-		_pollState = PollStateWaitBytes;
-		break;
+    case PollStateWaitCount:
+      _pollChecksum = _pollSize = ch;
+      _pollCount = 0;
+      _pollState = PollStateWaitBytes;
+      break;
 
-	    case PollStateWaitBytes:
-		_pollChecksum += ch;
-		if (_pollCount < destSize)
-		    dest[_pollCount] = ch;
-		if (_pollCount++ >= _pollSize)
-		    _pollState = PollStateWaitChecksum;
-		break;
+    case PollStateWaitBytes:
+      _pollChecksum += ch;
+      if (_pollCount < destSize)
+        dest[_pollCount] = ch;
+      if (_pollCount++ >= _pollSize)
+        _pollState = PollStateWaitChecksum;
+      break;
 
-	    case PollStateWaitChecksum:
-		_pollChecksum += ch;
-		_pollState = PollStateIdle;
-		*packetLen = _pollSize;
-		return (_pollChecksum == 0);
-		break;
-	}
+    case PollStateWaitChecksum:
+      _pollChecksum += ch;
+      _pollState = PollStateIdle;
+      *packetLen = _pollSize;
+      return (_pollChecksum == 0);
+      break;
     }
-    return false;
+  }
+  return false;
 }
 
 // Returns the number of bytes in the script, or 0 on errors
 // Only saves at most len bytes to dest
 // Calling with len = 0 will return the amount of space required without actually storing anything
-uint8_t Roomba::getScript(uint8_t* dest, uint8_t len)
+uint8_t Roomba::getScript(uint8_t *dest, uint8_t len)
 {
   _serial->write(154);
 
@@ -347,4 +347,24 @@ uint8_t Roomba::getScript(uint8_t* dest, uint8_t len)
   }
 
   return count;
+}
+
+const char *Roomba::chargingStateToString(int state)
+{
+  switch (state)
+  {
+  case Roomba::ChargeStateNotCharging:
+    return "Not charging";
+  case Roomba::ChargeStateReconditioningCharging:
+    return "Reconditioning charging";
+  case Roomba::ChargeStateFullCharging:
+    return "Full charging";
+  case Roomba::ChargeStateTrickleCharging:
+    return "Trickle charging";
+  case Roomba::ChargeStateWaiting:
+    return "Waiting";
+  case Roomba::ChargeStateFault:
+    return "Fault";
+  }
+  return "Unknown";
 }

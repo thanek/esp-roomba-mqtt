@@ -5,3 +5,5 @@
 .gcc-flags.json
 src/secrets.h
 .vscode
+.pio
+*.bin
