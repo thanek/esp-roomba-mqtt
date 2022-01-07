@@ -409,6 +409,9 @@ public:
     /// Baud is on of the Roomba::Baud enums
     void baud(Baud baud);
 
+    /// Sets the OI to Passive mode.
+    void passiveMode();
+
     /// Sets the OI to Safe mode.
     /// In Safe mode, the cliff and wheel drop detectors work to prevent Roomba driving off a cliff
     void safeMode();

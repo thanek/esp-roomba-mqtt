@@ -1,0 +1,4 @@
+połączenia kabli stąd:
+https://www.wuckel.de/index.php?id=irobot-roomba-umbau
+z dodatkiem rezystorów wg tego:
+https://github.com/incmve/roomba-esp8266/wiki/Hardware
