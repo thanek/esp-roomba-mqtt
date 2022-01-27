@@ -1,43 +1,26 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
-#include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
 #include <Roomba.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "config.h"
+#include "debug.h"
+#include "mqtt.h"
 extern "C"
 {
 #include "user_interface.h"
 }
 #include <Roomba.h>
 
-// Remote debugging over telnet. Just run:
-// `telnet roomba.local` OR `nc roomba.local 23`
-#if LOGGING
-#define MAX_TIME_INACTIVE 0
-#include <RemoteDebug.h>
-#define DLOG(msg, ...)                \
-  if (Debug.isActive(Debug.DEBUG))    \
-  {                                   \
-    Debug.printf(msg, ##__VA_ARGS__); \
-  }
-#define VLOG(msg, ...)                \
-  if (Debug.isActive(Debug.VERBOSE))  \
-  {                                   \
-    Debug.printf(msg, ##__VA_ARGS__); \
-  }
-RemoteDebug Debug;
-#else
-#define DLOG(msg, ...)
-#endif
-
 // Roomba setup
 int RX_PIN = 5;
 int TX_PIN = 4;
 SoftwareSerial serial(RX_PIN, TX_PIN);
 Roomba roomba(&serial, Roomba::Baud115200);
+
+// unique ID for ESP device i.e. roomba_98cdac3050de
+char *entityId;
 
 // Roomba state
 typedef struct
@@ -49,7 +32,7 @@ typedef struct
   int16_t current;
   // Supposedly unsigned according to the OI docs, but I've seen it
   // underflow to ~65000mAh, so I think signed will work better.
-  int16_t charge;ć
+  int16_t charge;
   uint16_t capacity;
 
   // Derived state
@@ -74,11 +57,17 @@ uint8_t sensors[] = {
 };
 
 // Network setup
-WiFiClient wifiClient;
 bool OTAStarted;
 
-// MQTT setup
-PubSubClient mqttClient(wifiClient);
+int getBatteryLevel(RoombaState state)
+{
+  int batteryLevel = 0;
+  if (state.capacity != 0)
+  {
+    batteryLevel = (state.charge * 100) / state.capacity;
+  }
+  return batteryLevel;
+}
 
 void wakeup()
 {
@@ -95,14 +84,6 @@ void wakeOnDock()
 {
   DLOG("Wakeup Roomba on dock\n");
   wakeup();
-#ifdef ROOMBA_650_SLEEP_FIX
-  // Some black magic from @AndiTheBest to keep the Roomba awake on the dock
-  // See https://github.com/johnboiles/esp-roomba-mqtt/issues/3#issuecomment-402096638
-  delay(10);
-  roomba.cover();
-  delay(150);
-  roomba.coverAndDock();
-#endif
 }
 
 void wakeOffDock()
@@ -213,33 +194,26 @@ bool performCommand(const char *cmdchar)
   return true;
 }
 
-char *getEntityID()
+void createEntityID()
 {
-  // build entity_id
   byte MAC[6];
   WiFi.macAddress(MAC);
   char MACc[30];
   sprintf(MACc, "%02X%02X%02X%02X%02X%02X", MAC[0], MAC[1], MAC[2], MAC[3], MAC[4], MAC[5]);
-  char entityID[50];
-  sprintf(entityID, "%s%s", MQTT_IDPREFIX, MACc);
-  // avoid confusions with lower/upper case differences in IDs
-  return strlwr(entityID);
+  char uniqId[50];
+  sprintf(uniqId, "roomba_%s", MACc);
+
+  int len = strlen(uniqId);
+  entityId = (char *)malloc(len + 1);
+  memcpy(entityId, strlwr(uniqId), len);
+  entityId[len] = 0;
 }
 
-char *getMQTTTopic(char *topic)
-{
-  // build mqtt target topic
-  char mqttTopic[200];
-  sprintf(mqttTopic, "%s%s%s%s", MQTT_TOPIC_BASE, getEntityID(), MQTT_DIVIDER, topic);
-  return mqttTopic;
-}
-
-void mqttCallback(char *topic, byte *payload, unsigned int length)
+void callback(char *topic, byte *payload, unsigned int length)
 {
   DLOG("Received mqtt callback for topic %s\n", topic);
-  if (strcmp(getMQTTTopic(MQTT_COMMAND_TOPIC), topic) == 0)
+  if (strcmp(getMqttCommandTopic(), topic) == 0)
   {
-    // turn payload into a null terminated string
     char *cmd = (char *)malloc(length + 1);
     memcpy(cmd, payload, length);
     cmd[length] = 0;
@@ -252,24 +226,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   }
 }
 
-float readADC(int samples)
-{
-  // Basic code to read from the ADC
-  int adc = 0;
-  for (int i = 0; i < samples; i++)
-  {
-    delay(1);
-    adc += analogRead(A0);
-  }
-  adc = adc / samples;
-  float mV = adc * ADC_VOLTAGE_DIVIDER;
-  DLOG("ADC for %d is %.1fmV with %d samples\n", adc, mV, samples);
-  return mV;
-}
-
 void debugCallback()
 {
-  String cmd = Debug.getLastCommand();
+  String cmd = getRemoteDebugLastCommand();
 
   // Debugging commands via telnet
   if (performCommand(cmd.c_str()))
@@ -285,54 +244,27 @@ void debugCallback()
     DLOG("Resetting Roomba\n");
     roomba.reset();
   }
-  else if (cmd == "mqtthello")
-  {
-    mqttClient.publish("vacuum/hello", "hello there");
-  }
   else if (cmd == "version")
   {
     const char compile_date[] = __DATE__ " " __TIME__;
     DLOG("Compiled on: %s\n", compile_date);
   }
-  else if (cmd == "baud115200")
-  {
-    DLOG("Setting baud to 115200\n");
-    serial.begin(115200);
-    delay(100);
-  }
-  else if (cmd == "baud19200")
-  {
-    DLOG("Setting baud to 19200\n");
-    serial.begin(19200);
-    delay(100);
-  }
-  else if (cmd == "baud57600")
-  {
-    DLOG("Setting baud to 57600\n");
-    serial.begin(57600);
-    delay(100);
-  }
-  else if (cmd == "baud38400")
-  {
-    DLOG("Setting baud to 38400\n");
-    serial.begin(38400);
-    delay(100);
-  }
-  else if (cmd == "sleep5")
+  else if (cmd == "sleep5s")
   {
     DLOG("Going to sleep for 5 seconds\n");
     delay(100);
     ESP.deepSleep(5e6);
   }
+  else if (cmd == "sleep10m")
+  {
+    DLOG("Going to sleep for 10 minutes\n");
+    delay(100);
+    ESP.deepSleep(600e6);
+  }
   else if (cmd == "wake")
   {
     DLOG("Toggle BRC pin\n");
     wakeup();
-  }
-  else if (cmd == "readadc")
-  {
-    float adc = readADC(10);
-    DLOG("ADC voltage is %.1fmV\n", adc);
   }
   else if (cmd == "streamresume")
   {
@@ -360,43 +292,36 @@ void debugCallback()
   }
 }
 
+// Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
 void sleepIfNecessary()
 {
   bool shouldSleep = false;
-  float mV;
 
-#ifdef ENABLE_ADC_SLEEP
-  // Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
-  mV = readADC(10);
-  // According to this post, you want to stop using NiMH batteries at about 0.9V per cell
-  // https://electronics.stackexchange.com/a/35879 For a 12 cell battery like is in the Roomba,
-  // That's 10.8 volts.
-  if (mV < 10800)
+  int batteryLevel = getBatteryLevel(roombaState);
+
+  if (batteryLevel > 0 && batteryLevel < 10)
   {
+    DLOG("Battery level is low (%d%%). Sleeping for 10 minutes\n", batteryLevel);
     shouldSleep = true;
   }
-#endif
 
-// alternative check based on roomba's sensor measures
-#ifdef ENABLE_SLEEP_ON_LOW_VOLTAGE
-  // Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
-  mV = roombaState.voltage;
+  float mV = roombaState.voltage;
   // check if mV is > 0 because it's initial value is 0 and we don't wan't to panic
   // before any real measure is done
   if (mV > 0 && mV < 10800)
   {
+    DLOG("Battery voltage is low (%.1fV). Sleeping for 10 minutes\n", mV / 1000);
     shouldSleep = true;
   }
-#endif
 
   if (shouldSleep)
   {
     // Fire off a quick message with our most recent state, if MQTT is connected
-    DLOG("Battery voltage is low (%.1fV). Sleeping for 10 minutes\n", mV / 1000);
-    if (mqttClient.connected())
+    delay(100);
+    if (mqttConnected())
     {
       StaticJsonDocument<200> root;
-      root["battery_level"] = 0;
+      root["battery_level"] = batteryLevel;
       root["cleaning"] = false;
       root["docked"] = false;
       root["charging"] = false;
@@ -404,12 +329,18 @@ void sleepIfNecessary()
       root["charge"] = 0;
       String jsonStr;
       serializeJson(root, jsonStr);
-      mqttClient.publish(getMQTTTopic(MQTT_STATE_TOPIC), jsonStr.c_str(), true);
+      mqttPublishState(jsonStr.c_str());
     }
     delay(200);
 
     // Sleep for 10 minutes
     ESP.deepSleep(600e6);
+  }
+
+  // this is probably some error, maybe with the wiring
+  if (mV == 0 || batteryLevel == 0)
+  {
+    DLOG("Battery readings seem to be wrong! Voltage: %.1fV, level: %d%%\n", mV, batteryLevel);
   }
 }
 
@@ -520,38 +451,38 @@ void onOTAStart()
   OTAStarted = true;
 }
 
+void reconnect()
+{
+  mqttConnect(entityId, MQTT_SERVER, 1883, MQTT_USER, MQTT_PASSWORD, callback);
+}
+
 void setup()
 {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
   // High-impedence on the BRC_PIN
   pinMode(BRC_PIN, INPUT);
 
-  // Set Hostname.
-  String hostname(HOSTNAME);
+  createEntityID();
+
+  String hostname(entityId);
   WiFi.hostname(hostname);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   WiFi.mode(WIFI_STA);
-
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
   }
 
-  ArduinoOTA.setHostname((const char *)hostname.c_str());
+  ArduinoOTA.setHostname(entityId);
   ArduinoOTA.begin();
   ArduinoOTA.onStart(onOTAStart);
 
-  mqttClient.setServer(MQTT_SERVER, 1883);
-  mqttClient.setCallback(mqttCallback);
+  reconnect();
 
-#if LOGGING
-  Debug.begin((const char *)hostname.c_str());
-  Debug.showTime(true);
-  Debug.setResetCmdEnabled(true);
-  Debug.setCallBackProjectCmds(debugCallback);
-  Debug.setSerialEnabled(false);
-#endif
+  initDebug(entityId, debugCallback);
 
-  // Sleep immediately if ENABLE_ADC_SLEEP (or ENABLE_SLEEP_ON_LOW_VOLTAGE) and the battery is low
   sleepIfNecessary();
 
   roomba.start();
@@ -565,39 +496,24 @@ void setup()
   roomba.stream(sensors, sizeof(sensors));
 }
 
-void reconnect()
-{
-  DLOG("Attempting MQTT connection...\n");
-  // Attempt to connect
-  if (mqttClient.connect(HOSTNAME, MQTT_USER, MQTT_PASSWORD))
-  {
-    DLOG("MQTT connected\n");
-    mqttClient.subscribe(getMQTTTopic(MQTT_COMMAND_TOPIC));
-  }
-  else
-  {
-    DLOG("MQTT failed rc=%d try again in 5 seconds\n", mqttClient.state());
-  }
-}
-
 void sendConfig()
 {
-  if (!mqttClient.connected())
+  if (!mqttConnected())
   {
     DLOG("MQTT Disconnected, not sending config\n");
     return;
   }
   StaticJsonDocument<500> root;
-  root["name"] = getEntityID();
-  root["unique_id"] = getEntityID();
+  root["name"] = entityId;
+  root["unique_id"] = entityId;
+  root["device"]["identifiers"][0] = entityId;
+  root["device"]["manufacturer"] = "iRobot";
+  root["device"]["model"] = "Roomba";
   root["schema"] = "state";
-  char baseTopic[200];
-  sprintf(baseTopic, "%s%s", MQTT_TOPIC_BASE, getEntityID());
-  root["~"] = baseTopic;
-  root["stat_t"] = String("~/") + MQTT_STATE_TOPIC;
-  root["cmd_t"] = String("~/") + MQTT_COMMAND_TOPIC;
-  root["send_cmd_t"] = String("~/") + MQTT_COMMAND_TOPIC;
-  root["json_attr_t"] = String("~/") + MQTT_STATE_TOPIC;
+  root["stat_t"] = getMqttStateTopic();
+  root["json_attr_t"] = getMqttStateTopic();
+  root["cmd_t"] = getMqttCommandTopic();
+  root["send_cmd_t"] = getMqttCommandTopic();
   root["sup_feat"][0] = "start";
   root["sup_feat"][1] = "stop";
   root["sup_feat"][2] = "pause";
@@ -608,24 +524,20 @@ void sendConfig()
   String jsonStr;
   serializeJson(root, jsonStr);
   DLOG("Reporting config: %s\n", jsonStr.c_str());
-  mqttClient.publish(getMQTTTopic(MQTT_CONFIG_TOPIC), jsonStr.c_str());
+  mqttPublishConfig(jsonStr.c_str());
 }
 
 void sendStatus()
 {
-  if (!mqttClient.connected())
+  if (!mqttConnected())
   {
     DLOG("MQTT Disconnected, not sending status\n");
     return;
   }
 
-  int batteryLevel = 0;
-  if (roombaState.capacity != 0)
-  {
-    batteryLevel = (roombaState.charge * 100) / roombaState.capacity;
-  }
+  int batteryLevel = getBatteryLevel(roombaState);
 
-  DLOG("Reporting packet Distance:%dmm ChargingState:%d (%s) Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh BatteryLevel:%d%%\n",
+  DLOG("Reporting packet: Distance:%dmm ChargingState:%d (%s) Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh BatteryLevel:%d%%\n",
        roombaState.distance, roombaState.chargingState, Roomba::chargingStateToString(roombaState.chargingState), roombaState.voltage, roombaState.current, roombaState.charge, roombaState.capacity, batteryLevel);
   StaticJsonDocument<200> root;
   root["battery_level"] = batteryLevel;
@@ -653,7 +565,7 @@ void sendStatus()
   String jsonStr;
   serializeJson(root, jsonStr);
   DLOG("Reporting status: %s\n", jsonStr.c_str());
-  mqttClient.publish(getMQTTTopic(MQTT_STATE_TOPIC), jsonStr.c_str());
+  mqttPublishState(jsonStr.c_str());
 }
 
 int lastStateMsgTime = 0;
@@ -663,31 +575,27 @@ int configLoop = 0;
 
 void loop()
 {
-  // Important callbacks that _must_ happen every cycle
   ArduinoOTA.handle();
   yield();
-  Debug.handle();
-
-  // Skip all other logic if we're running an OTA update
   if (OTAStarted)
   {
     return;
   }
 
+  handleDebug();
+
   long now = millis();
-  // If MQTT client can't connect to broker, then reconnect
   if ((now - lastConnectTime) > 5000)
   {
     lastConnectTime = now;
-    if (!mqttClient.connected())
+    if (!mqttConnected())
     {
-      DLOG("Reconnecting MQTT\n");
+      DLOG("MQTT not connected, connecting...\n");
       reconnect();
       sendConfig();
     }
     else
     {
-      // resend config every now and then to reconfigure entity e.g. in case homeassistant has been restarted
       if (configLoop == 19)
       {
         sendConfig();
@@ -712,7 +620,6 @@ void loop()
       }
       else
       {
-        // wakeOffDock();
         wakeup();
       }
     }
@@ -740,6 +647,6 @@ void loop()
     sleepIfNecessary();
   }
 
+  mqttLoop();
   readSensorPacket();
-  mqttClient.loop();
 }
