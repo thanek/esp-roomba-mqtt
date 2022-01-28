@@ -4,6 +4,7 @@
 #include <ArduinoOTA.h>
 #include <Roomba.h>
 #include <ArduinoJson.h>
+#include <NTPClient.h>
 #include "config.h"
 #include "debug.h"
 #include "mqtt.h"
@@ -56,6 +57,13 @@ uint8_t sensors[] = {
     Roomba::SensorBatteryCapacity // PID 26, 2 bytes, mAh, unsigned
 };
 
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, 3600);
+// You can specify the time server pool and the offset, (in seconds)
+// additionally you can specify the update interval (in milliseconds).
+// NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
+const char *daysOfWeek[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
 // Network setup
 bool OTAStarted;
 
@@ -92,6 +100,22 @@ void wakeOffDock()
   roomba.safeMode();
   delay(300);
   roomba.passiveMode();
+}
+
+void setDayTime(uint8_t day, uint8_t hour, uint8_t minute)
+{
+  wakeup();
+  serial.write(168); // Set Clock
+  serial.write(day);
+  serial.write(hour);
+  serial.write(minute);
+  serial.write(133);
+}
+
+void roombaSetCurrentTime()
+{
+  DLOG("Setting time to %s, %s\n", daysOfWeek[timeClient.getDay()], timeClient.getFormattedTime());
+  setDayTime(timeClient.getDay(), timeClient.getHours(), timeClient.getMinutes());
 }
 
 void roomba_song(int *bytes, int len)
@@ -260,6 +284,10 @@ void debugCallback()
     DLOG("Going to sleep for 10 minutes\n");
     delay(100);
     ESP.deepSleep(600e6);
+  }
+  else if (cmd == "settime")
+  {
+    roombaSetCurrentTime();
   }
   else if (cmd == "wake")
   {
@@ -485,6 +513,8 @@ void setup()
 
   sleepIfNecessary();
 
+  timeClient.begin();
+
   roomba.start();
   delay(100);
 
@@ -571,6 +601,7 @@ void sendStatus()
 int lastStateMsgTime = 0;
 int lastWakeupTime = 0;
 int lastConnectTime = 0;
+int lastSetDateTime = 0;
 int configLoop = 0;
 
 void loop()
@@ -581,6 +612,8 @@ void loop()
   {
     return;
   }
+
+  timeClient.update();
 
   handleDebug();
 
@@ -645,6 +678,13 @@ void loop()
       roombaState.sent = true;
     }
     sleepIfNecessary();
+  }
+
+  // synchronize current time every 12 hours
+  if (now - lastSetDateTime > 1000 * 60 * 60 * 12)
+  {
+    lastSetDateTime = now;
+    roombaSetCurrentTime();
   }
 
   mqttLoop();
