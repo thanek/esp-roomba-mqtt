@@ -5,6 +5,7 @@
 #include <Roomba.h>
 #include <ArduinoJson.h>
 #include <NTPClient.h>
+#include <WiFiManager.h>
 #include "config.h"
 #include "debug.h"
 #include "mqtt.h"
@@ -13,6 +14,8 @@ extern "C"
 #include "user_interface.h"
 }
 #include <Roomba.h>
+
+WiFiManager wifiManager;
 
 // Roomba setup
 int RX_PIN = 5;
@@ -481,7 +484,9 @@ void onOTAStart()
 
 void reconnect()
 {
-  mqttConnect(entityId, MQTT_SERVER, 1883, MQTT_USER, MQTT_PASSWORD, callback);
+  WiFiManagerParameter custom_mqtt_server("server", "MQTT host", MQTT_SERVER, 40);
+  wifiManager.addParameter(&custom_mqtt_server);
+  mqttConnect(entityId, custom_mqtt_server.getValue(), 1883, MQTT_USER, MQTT_PASSWORD, callback);
 }
 
 void setup()
@@ -496,12 +501,8 @@ void setup()
 
   String hostname(entityId);
   WiFi.hostname(hostname);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.mode(WIFI_STA);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-  }
+  
+  wifiManager.autoConnect();
 
   ArduinoOTA.setHostname(entityId);
   ArduinoOTA.begin();
